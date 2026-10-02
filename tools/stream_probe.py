@@ -14,6 +14,7 @@
   python stream_probe.py "如如=http://pull-flv-....flv?..."
   python stream_probe.py -t 300 "如如-藍光=URL1" "如如-超清=URL2" "對照=URL3"
   python stream_probe.py 已錄好的檔案.flv          # 只分析，不錄
+  python stream_probe.py                           # 不給參數 = 一步步問你（直播碼率測試.bat 就是這樣）
 
 多條連結會「同時」錄，確保比較的是同一段時間。
 輸出在 probe_YYYYmmdd_HHMMSS/ 資料夾：report.html、每秒碼率 CSV、截圖、錄下的 .flv。
@@ -32,6 +33,7 @@ import subprocess
 import sys
 import threading
 import time
+import webbrowser
 
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0 Safari/537.36")
@@ -367,6 +369,45 @@ figure img{{height:320px;border-radius:6px;display:block}} figcaption{{color:var
         f.write(doc)
 
 
+# ---------------------------------------------------------------- 互動模式（給 .bat 點兩下用）
+
+def ask(prompt, default=""):
+    try:
+        v = input(prompt).strip()
+    except EOFError:
+        v = ""
+    return v or default
+
+
+def interactive():
+    print("=" * 56)
+    print("  直播串流碼率分析")
+    print("  連結從工具的「串流連結」區塊按「複製」，在這裡按右鍵貼上")
+    print("=" * 56)
+    label = ask("\n這次測試叫什麼名字？（例如 無特效、有特效；直接 Enter = 測試）：", "測試")
+    targets = []
+    while True:
+        n = len(targets) + 1
+        hint = "" if n == 1 else "（不用再加就直接按 Enter）"
+        url = ask(f"\n貼上第 {n} 條 FLV 連結{hint}：").strip('"').strip("'").strip()
+        if not url:
+            if targets:
+                break
+            print("  至少要貼一條連結。")
+            continue
+        if not re.match(r"^(https?|rtmps?)://", url, re.I):
+            print("  這看起來不是連結（要 http 開頭），請重新貼。")
+            continue
+        default_name = label if n == 1 else f"串流{n}"
+        name = ask(f"  這條叫什麼名字？（直接 Enter = {default_name}）：", default_name)
+        if any(t[0] == name for t in targets):
+            name = f"{name}_{n}"
+        targets.append((name, url))
+    sec = ask("\n要錄幾秒？（直接 Enter = 180）：", "180")
+    duration = int(sec) if sec.isdigit() and int(sec) > 0 else 180
+    return label, [f"{name}={url}" for name, url in targets], duration
+
+
 # ---------------------------------------------------------------- 主程式
 
 def main():
@@ -375,11 +416,17 @@ def main():
     except Exception:
         pass
     ap = argparse.ArgumentParser(description="直播串流碼率分析（需要 ffmpeg）")
-    ap.add_argument("targets", nargs="+", help='"名稱=URL"、URL、或已錄好的檔案')
+    ap.add_argument("targets", nargs="*", help='"名稱=URL"、URL、或已錄好的檔案（不給就進互動模式）')
     ap.add_argument("-t", "--duration", type=int, default=120, help="錄製秒數（預設 120）")
     ap.add_argument("-o", "--out", help="輸出資料夾（預設 probe_日期時間）")
     ap.add_argument("--snapshots", type=int, default=4, help="每條串流擷取幾張截圖（預設 4，0=不截）")
+    ap.add_argument("--open", action="store_true", help="完成後自動用瀏覽器打開報告")
     args = ap.parse_args()
+
+    label = None
+    if not args.targets:
+        label, args.targets, args.duration = interactive()
+        args.open = True
 
     for tool in ("ffmpeg", "ffprobe"):
         if not shutil.which(tool):
@@ -391,7 +438,8 @@ def main():
         die("名稱重複了，請用 名稱=URL 分別命名")
 
     now = dt.datetime.now()
-    out_dir = args.out or f"probe_{now:%Y%m%d_%H%M%S}"
+    prefix = f"probe_{safe_name(label)}_" if label else "probe_"
+    out_dir = args.out or f"{prefix}{now:%Y%m%d_%H%M%S}"
     os.makedirs(out_dir, exist_ok=True)
 
     files, rec = {}, {}
@@ -438,6 +486,11 @@ def main():
     rp = os.path.join(out_dir, "report.html")
     html_report(rp, results, now.strftime("%Y-%m-%d %H:%M:%S"))
     print(f"\n報告：{os.path.abspath(rp)}")
+    if args.open:
+        if os.name == "nt":
+            os.startfile(os.path.abspath(rp))
+        else:
+            webbrowser.open("file://" + os.path.abspath(rp))
 
 
 if __name__ == "__main__":
